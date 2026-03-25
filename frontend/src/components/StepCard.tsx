@@ -1,4 +1,4 @@
-import type { StepState, StepResultData } from "../types";
+import type { StepState, StepResultData, ScoringResult } from "../types";
 import { EntityStep } from "./steps/EntityStep";
 import { BooleanStep } from "./steps/BooleanStep";
 import { SnippetStep } from "./steps/SnippetStep";
@@ -40,19 +40,31 @@ function ElapsedBadge({ startedAt, completedAt }: { startedAt: number | null; co
   return <span className="text-xs text-gray-300 ml-auto">{label}</span>;
 }
 
-function renderResult(result: StepResultData, onBooleanApply?: (updated: import("../types").BooleanQueryResult) => void) {
+function renderResult(
+  result: StepResultData,
+  onBooleanApply?: (updated: import("../types").BooleanQueryResult) => void,
+  onScoringConfirm?: (corrected: ScoringResult) => void,
+) {
   switch (result.resultType) {
     case "intent_check": return null;
     case "entity": return <EntityStep data={result.data} />;
     case "boolean": return <BooleanStep data={result.data} onApply={onBooleanApply} />;
     case "snippets": return <SnippetStep data={result.data} />;
-    case "scoring": return <ScoringStep data={result.data} />;
+    case "scoring": return <ScoringStep data={result.data} onConfirm={onScoringConfirm} />;
     case "smart_prompt": return <SmartPromptStep data={result.data} />;
     case "create_search": return <CreateSearchStep data={result.data} />;
   }
 }
 
-export function StepCard({ step, onBooleanApply }: { step: StepState; onBooleanApply?: (updated: import("../types").BooleanQueryResult) => void }) {
+export function StepCard({
+  step,
+  onBooleanApply,
+  onScoringConfirm,
+}: {
+  step: StepState;
+  onBooleanApply?: (updated: import("../types").BooleanQueryResult) => void;
+  onScoringConfirm?: (corrected: ScoringResult) => void;
+}) {
   const iterLabel = step.iteration > 0 ? ` · Round ${step.iteration + 1}` : "";
 
   return (
@@ -81,7 +93,7 @@ export function StepCard({ step, onBooleanApply }: { step: StepState; onBooleanA
       {/* Body */}
       {step.result && step.status === "done" && (
         <div className="px-4 py-4">
-          {renderResult(step.result, onBooleanApply)}
+          {renderResult(step.result, onBooleanApply, onScoringConfirm)}
         </div>
       )}
     </div>

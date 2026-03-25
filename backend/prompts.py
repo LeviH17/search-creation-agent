@@ -283,7 +283,13 @@ User's stated intent and context:
 Current boolean query: "{query}"
 Current precision: {precision:.0%}
 
-Write a natural language Smart Search filter that reflects the user's specific purpose and any scope constraints they mentioned. Return JSON only."""
+User-verified RELEVANT examples (your filter must INCLUDE content like this):
+{relevant_examples}
+
+User-verified IRRELEVANT examples (your filter must EXCLUDE content like this):
+{irrelevant_examples}
+
+Write a natural language Smart Search filter that reflects the user's specific purpose and these verified examples. Return JSON only."""
 
 
 PRODUCTION_BOOLEAN_SYSTEM = """You are writing the final production boolean query for a social media monitoring search.

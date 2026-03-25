@@ -67,6 +67,7 @@ class PipelineRequest(BaseModel):
     conversation_history: list[dict] = []
     entity_override: Optional[dict] = None
     boolean_override: Optional[dict] = None
+    confirmed_scoring: Optional[dict] = None
 
 
 class ChatInterpretRequest(BaseModel):

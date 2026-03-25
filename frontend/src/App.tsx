@@ -3,11 +3,13 @@ import { ChatPanel } from "./components/ChatPanel";
 import { PipelinePanel } from "./components/PipelinePanel";
 
 export default function App() {
-  const { pipeline, messages, isLoading, sendMessage, applyBooleanEdit, reset } = usePipeline();
+  const { pipeline, messages, isLoading, sendMessage, applyBooleanEdit, confirmScoring, reset } = usePipeline();
 
   const chatPlaceholder =
     pipeline.status === "awaiting_boolean"
       ? "Say 'looks good' or describe changes..."
+      : pipeline.status === "awaiting_scoring_review"
+      ? "Review scored snippets in the panel, then say 'looks good'..."
       : pipeline.status === "done" || pipeline.status === "error"
       ? "Ask to modify or start a new search..."
       : "e.g. Track Apple Inc. sentiment...";
@@ -34,7 +36,7 @@ export default function App() {
           <span className="text-xs text-gray-400">Real-time pipeline execution</span>
         </div>
 
-        <PipelinePanel pipeline={pipeline} onBooleanApply={applyBooleanEdit} />
+        <PipelinePanel pipeline={pipeline} onBooleanApply={applyBooleanEdit} onScoringConfirm={confirmScoring} />
       </div>
     </div>
   );

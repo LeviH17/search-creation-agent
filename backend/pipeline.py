@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Callable, Awaitable
 import anthropic
 
-from models import PipelineRequest, BooleanQueryResult, ScoringResult
+from models import PipelineRequest, BooleanQueryResult, ScoringResult, EntityResult, Snippet
 from steps import (
     clarification,
     entity_extraction,
@@ -34,11 +34,214 @@ async def run_pipeline(
     """
     client = anthropic.AsyncAnthropic(max_retries=5)
 
-    # ── Phase 2: boolean override provided — skip setup steps ─────────────────
-    if request.entity_override and request.boolean_override:
-        from models import EntityResult, BooleanQueryResult as BQR
+    # ── Phase 3: boolean + confirmed scoring provided — run loop with confirmed scoring ──
+    if request.entity_override and request.boolean_override and request.confirmed_scoring is not None:
         entity = EntityResult(**request.entity_override)
-        boolean = BQR(**request.boolean_override)
+        boolean = BooleanQueryResult(**request.boolean_override)
+
+        # Reconstruct confirmed scoring from request
+        confirmed_snippets = [Snippet(**s) for s in request.confirmed_scoring.get("snippets", [])]
+        confirmed_scoring_obj = ScoringResult(
+            snippets=confirmed_snippets,
+            precision=request.confirmed_scoring["precision"],
+            threshold=request.confirmed_scoring.get("threshold", 0.80),
+            passed=request.confirmed_scoring["passed"],
+            iteration=0,
+        )
+
+        current_boolean: BooleanQueryResult = boolean
+        current_snippets = confirmed_scoring_obj.snippets
+        current_smart_prompt = None
+        last_scoring: ScoringResult | None = None
+
+        for iteration in range(MAX_ITERATIONS):
+            # On iteration 0: use confirmed scoring from user review
+            if iteration == 0:
+                scoring = confirmed_scoring_obj
+            else:
+                # Fetch new snippets
+                await emit("step_start", "snippet_fetch", {
+                    "label": "Fetching sample snippets",
+                    "description": "Re-fetching a fresh sample with the updated boolean query."
+                }, iteration)
+
+                try:
+                    current_snippets = await snippet_fetch.run(current_boolean, entity, client)
+                except Exception as e:
+                    await emit("step_error", "snippet_fetch", {"message": str(e), "recoverable": False}, iteration)
+                    return
+
+                await emit("step_complete", "snippet_fetch", {
+                    "result_type": "snippets",
+                    "data": [s.model_dump() for s in current_snippets]
+                }, iteration)
+
+                # Score snippets
+                await emit("step_start", "relevance_scoring", {
+                    "label": "Scoring snippet relevance",
+                    "description": f"Evaluating each result against search intent (target: ≥80% precision). Iteration {iteration + 1}."
+                }, iteration)
+
+                try:
+                    scoring = await relevance_scoring.run(
+                        current_snippets, entity, request.query, iteration, client
+                    )
+                except Exception as e:
+                    await emit("step_error", "relevance_scoring", {"message": str(e), "recoverable": False}, iteration)
+                    return
+
+                await emit("step_complete", "relevance_scoring", {
+                    "result_type": "scoring",
+                    "data": {
+                        **scoring.model_dump(exclude={"snippets"}),
+                        "snippets": [s.model_dump() for s in scoring.snippets]
+                    }
+                }, iteration)
+
+            last_scoring = scoring
+
+            if scoring.passed:
+                # Smart prompt (if not yet generated)
+                if not current_smart_prompt:
+                    await emit("step_start", "smart_prompt", {
+                        "label": "Crafting Smart Search filter",
+                        "description": "Writing a natural language AI filter to catch semantic noise the boolean can't handle."
+                    }, iteration)
+
+                    try:
+                        smart_result = await smart_prompt_step.run(
+                            current_boolean, entity, scoring, client,
+                            query=request.query,
+                            conversation_history=request.conversation_history,
+                        )
+                    except Exception as e:
+                        await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
+                        return
+
+                    current_smart_prompt = smart_result.prompt
+
+                    await emit("step_complete", "smart_prompt", {
+                        "result_type": "smart_prompt",
+                        "data": smart_result.model_dump()
+                    }, iteration)
+
+                # Production boolean
+                prod_boolean = current_boolean
+                if current_smart_prompt:
+                    await emit("step_start", "production_boolean", {
+                        "label": "Crafting production boolean",
+                        "description": "Building a broader boolean for live use — semantic filtering is handled by the Smart Search prompt."
+                    }, iteration)
+
+                    try:
+                        prod_boolean = await production_boolean_step.run(
+                            entity, scoring, current_boolean, current_smart_prompt, client,
+                            query=request.query,
+                            conversation_history=request.conversation_history,
+                        )
+                    except Exception as e:
+                        await emit("step_error", "production_boolean", {"message": str(e), "recoverable": False}, iteration)
+                        return
+
+                    await emit("step_complete", "production_boolean", {
+                        "result_type": "boolean",
+                        "data": prod_boolean.model_dump()
+                    }, iteration)
+
+                # Create search
+                await emit("step_start", "create_search", {
+                    "label": "Creating search",
+                    "description": "Precision threshold met. Saving the search configuration."
+                }, iteration)
+
+                result = create_search.run(prod_boolean, scoring, iteration, current_smart_prompt)
+
+                await emit("step_complete", "create_search", {
+                    "result_type": "create_search",
+                    "data": result.model_dump()
+                }, iteration)
+
+                await emit("pipeline_done", "pipeline", {
+                    "success": True,
+                    "iterations_used": iteration,
+                    "final_precision": scoring.precision
+                }, iteration)
+                return
+
+            # Broaden boolean
+            await emit("step_start", "boolean_broadening", {
+                "label": "Broadening boolean query",
+                "description": f"Precision was {scoring.precision:.0%} — refining query to reduce noise and improve recall."
+            }, iteration)
+
+            try:
+                current_boolean = await boolean_broadening.run(
+                    current_boolean, scoring, entity, iteration, client
+                )
+            except Exception as e:
+                await emit("step_error", "boolean_broadening", {"message": str(e), "recoverable": False}, iteration)
+                return
+
+            await emit("step_complete", "boolean_broadening", {
+                "result_type": "boolean",
+                "data": current_boolean.model_dump()
+            }, iteration)
+
+            # Smart prompt
+            await emit("step_start", "smart_prompt", {
+                "label": "Crafting Smart Search filter",
+                "description": "Writing a natural language AI filter to catch semantic noise the boolean can't handle."
+            }, iteration)
+
+            try:
+                smart_result = await smart_prompt_step.run(
+                    current_boolean, entity, scoring, client,
+                    query=request.query,
+                    conversation_history=request.conversation_history,
+                )
+            except Exception as e:
+                await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
+                return
+
+            current_smart_prompt = smart_result.prompt
+
+            await emit("step_complete", "smart_prompt", {
+                "result_type": "smart_prompt",
+                "data": smart_result.model_dump()
+            }, iteration)
+
+            # Filtered snippet fetch
+            await emit("step_start", "filtered_snippet_fetch", {
+                "label": "Fetching filtered results",
+                "description": "Re-fetching with Smart Search filter applied."
+            }, iteration)
+
+            try:
+                current_snippets = await snippet_fetch.run_filtered(
+                    current_boolean, entity, current_smart_prompt, client
+                )
+            except Exception as e:
+                await emit("step_error", "filtered_snippet_fetch", {"message": str(e), "recoverable": False}, iteration)
+                return
+
+            await emit("step_complete", "filtered_snippet_fetch", {
+                "result_type": "snippets",
+                "data": [s.model_dump() for s in current_snippets]
+            }, iteration)
+
+        # Exhausted all iterations
+        final_precision = last_scoring.precision if last_scoring else 0.0
+        await emit("pipeline_done", "pipeline", {
+            "success": False,
+            "iterations_used": MAX_ITERATIONS,
+            "final_precision": final_precision
+        }, MAX_ITERATIONS)
+        return
+
+    # ── Phase 2: boolean override provided — fetch snippets, score, pause ─────
+    elif request.entity_override and request.boolean_override:
+        entity = EntityResult(**request.entity_override)
+        boolean = BooleanQueryResult(**request.boolean_override)
 
     else:
         # ── Step 0: Clarification check ──────────────────────────────────────
@@ -127,174 +330,31 @@ async def run_pipeline(
         "data": [s.model_dump() for s in snippets]
     }, 0)
 
-    # ── Iteration loop ────────────────────────────────────────────────────────
-    current_boolean: BooleanQueryResult = boolean
-    current_snippets = snippets
-    current_smart_prompt = None
-    last_scoring: ScoringResult | None = None
+    # ── Step 4: Score snippets (iteration 0) ─────────────────────────────────
+    await emit("step_start", "relevance_scoring", {
+        "label": "Scoring snippet relevance",
+        "description": "Evaluating each result against search intent (target: ≥80% precision). Iteration 1."
+    }, 0)
 
-    for iteration in range(MAX_ITERATIONS):
+    try:
+        scoring = await relevance_scoring.run(snippets, entity, request.query, 0, client)
+    except Exception as e:
+        await emit("step_error", "relevance_scoring", {"message": str(e), "recoverable": False}, 0)
+        return
 
-        # Step 4: Score snippets
-        await emit("step_start", "relevance_scoring", {
-            "label": "Scoring snippet relevance",
-            "description": f"Evaluating each result against search intent (target: ≥80% precision). Iteration {iteration + 1}."
-        }, iteration)
+    await emit("step_complete", "relevance_scoring", {
+        "result_type": "scoring",
+        "data": {
+            **scoring.model_dump(exclude={"snippets"}),
+            "snippets": [s.model_dump() for s in scoring.snippets]
+        }
+    }, 0)
 
-        try:
-            scoring = await relevance_scoring.run(
-                current_snippets, entity, request.query, iteration, client
-            )
-        except Exception as e:
-            await emit("step_error", "relevance_scoring", {"message": str(e), "recoverable": False}, iteration)
-            return
-
-        last_scoring = scoring
-        await emit("step_complete", "relevance_scoring", {
-            "result_type": "scoring",
-            "data": {
-                **scoring.model_dump(exclude={"snippets"}),
-                "snippets": [s.model_dump() for s in scoring.snippets]
-            }
-        }, iteration)
-
-        if scoring.passed:
-            # ── Smart prompt (if not yet generated) ──────────────────────
-            # Always generate a smart prompt before the production boolean
-            # so the broader boolean can rely on it for semantic filtering.
-            if not current_smart_prompt:
-                await emit("step_start", "smart_prompt", {
-                    "label": "Crafting Smart Search filter",
-                    "description": "Writing a natural language AI filter to catch semantic noise the boolean can't handle."
-                }, iteration)
-
-                try:
-                    smart_result = await smart_prompt_step.run(
-                        current_boolean, entity, scoring, client,
-                        query=request.query,
-                        conversation_history=request.conversation_history,
-                    )
-                except Exception as e:
-                    await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
-                    return
-
-                current_smart_prompt = smart_result.prompt
-
-                await emit("step_complete", "smart_prompt", {
-                    "result_type": "smart_prompt",
-                    "data": smart_result.model_dump()
-                }, iteration)
-
-            # ── Production boolean ────────────────────────────────────────
-            # Generate a broader boolean for production use — the smart prompt
-            # handles semantic filtering, so the boolean can maximise recall.
-            prod_boolean = current_boolean  # fallback
-            if current_smart_prompt:
-                await emit("step_start", "production_boolean", {
-                    "label": "Crafting production boolean",
-                    "description": "Building a broader boolean for live use — semantic filtering is handled by the Smart Search prompt."
-                }, iteration)
-
-                try:
-                    prod_boolean = await production_boolean_step.run(
-                        entity, scoring, current_boolean, current_smart_prompt, client,
-                        query=request.query,
-                        conversation_history=request.conversation_history,
-                    )
-                except Exception as e:
-                    await emit("step_error", "production_boolean", {"message": str(e), "recoverable": False}, iteration)
-                    return
-
-                await emit("step_complete", "production_boolean", {
-                    "result_type": "boolean",
-                    "data": prod_boolean.model_dump()
-                }, iteration)
-
-            # ── Create search ─────────────────────────────────────────────
-            await emit("step_start", "create_search", {
-                "label": "Creating search",
-                "description": "Precision threshold met. Saving the search configuration."
-            }, iteration)
-
-            result = create_search.run(prod_boolean, scoring, iteration, current_smart_prompt)
-
-            await emit("step_complete", "create_search", {
-                "result_type": "create_search",
-                "data": result.model_dump()
-            }, iteration)
-
-            await emit("pipeline_done", "pipeline", {
-                "success": True,
-                "iterations_used": iteration,
-                "final_precision": scoring.precision
-            }, iteration)
-            return
-
-        # ── Step 5: Broaden boolean ───────────────────────────────────────
-        await emit("step_start", "boolean_broadening", {
-            "label": "Broadening boolean query",
-            "description": f"Precision was {scoring.precision:.0%} — refining query to reduce noise and improve recall."
-        }, iteration)
-
-        try:
-            current_boolean = await boolean_broadening.run(
-                current_boolean, scoring, entity, iteration, client
-            )
-        except Exception as e:
-            await emit("step_error", "boolean_broadening", {"message": str(e), "recoverable": False}, iteration)
-            return
-
-        await emit("step_complete", "boolean_broadening", {
-            "result_type": "boolean",
-            "data": current_boolean.model_dump()
-        }, iteration)
-
-        # ── Step 6: Smart search prompt ───────────────────────────────────
-        await emit("step_start", "smart_prompt", {
-            "label": "Crafting Smart Search filter",
-            "description": "Writing a natural language AI filter to catch semantic noise the boolean can't handle."
-        }, iteration)
-
-        try:
-            smart_result = await smart_prompt_step.run(
-                current_boolean, entity, scoring, client,
-                query=request.query,
-                conversation_history=request.conversation_history,
-            )
-        except Exception as e:
-            await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
-            return
-
-        current_smart_prompt = smart_result.prompt
-
-        await emit("step_complete", "smart_prompt", {
-            "result_type": "smart_prompt",
-            "data": smart_result.model_dump()
-        }, iteration)
-
-        # ── Step 7: Filtered snippet fetch ────────────────────────────────
-        await emit("step_start", "filtered_snippet_fetch", {
-            "label": "Fetching filtered results",
-            "description": "Re-fetching with Smart Search filter applied."
-        }, iteration)
-
-        try:
-            current_snippets = await snippet_fetch.run_filtered(
-                current_boolean, entity, current_smart_prompt, client
-            )
-        except Exception as e:
-            await emit("step_error", "filtered_snippet_fetch", {"message": str(e), "recoverable": False}, iteration)
-            return
-
-        await emit("step_complete", "filtered_snippet_fetch", {
-            "result_type": "snippets",
-            "data": [s.model_dump() for s in current_snippets]
-        }, iteration)
-
-    # Exhausted all iterations
-    final_precision = last_scoring.precision if last_scoring else 0.0
-    await emit("pipeline_done", "pipeline", {
-        "success": False,
-        "iterations_used": MAX_ITERATIONS,
-        "final_precision": final_precision
-    }, MAX_ITERATIONS)
+    # ── Pause: ask frontend to review and correct scoring labels ──────────────
+    await emit("scoring_review_needed", "relevance_scoring", {
+        "scoring": {
+            **scoring.model_dump(exclude={"snippets"}),
+            "snippets": [s.model_dump() for s in scoring.snippets]
+        }
+    }, 0)
+    return

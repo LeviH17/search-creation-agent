@@ -26,6 +26,27 @@ async def run(
 ) -> SmartPromptResult:
     intent_context = _build_intent_context(query, conversation_history or [])
 
+    # Extract top examples for few-shot prompting
+    relevant = sorted(
+        [s for s in scoring.snippets if s.relevance_label == "Relevant"],
+        key=lambda s: s.relevance_score or 0,
+        reverse=True,
+    )[:5]
+    irrelevant = sorted(
+        [s for s in scoring.snippets if s.relevance_label == "Irrelevant"],
+        key=lambda s: s.relevance_score or 1,
+    )[:5]
+
+    relevant_examples = "\n".join(
+        f'{i + 1}. "{s.text}" — {s.relevance_reason or "Clearly on-topic"}'
+        for i, s in enumerate(relevant)
+    ) or "None available"
+
+    irrelevant_examples = "\n".join(
+        f'{i + 1}. "{s.text}" — {s.relevance_reason or "Off-topic"}'
+        for i, s in enumerate(irrelevant)
+    ) or "None available"
+
     user_content = SMART_PROMPT_USER.format(
         entity_name=entity.entityName,
         entity_type=entity.entityType,
@@ -33,6 +54,8 @@ async def run(
         noise_types=", ".join(entity.knownNoiseTypes) or "None identified",
         ambiguity_reasons=", ".join(entity.ambiguityReasons) or "None identified",
         intent_context=intent_context,
+        relevant_examples=relevant_examples,
+        irrelevant_examples=irrelevant_examples,
         query=boolean.query,
         precision=scoring.precision,
     )

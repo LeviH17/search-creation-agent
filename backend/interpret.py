@@ -47,7 +47,7 @@ Interpret the user's message and return a JSON object with this exact structure:
 }}
 
 Action rules:
-- "confirm": user approves current boolean query (e.g. "looks good", "continue", "yes", "go ahead", "that's fine")
+- "confirm": user approves the current state (e.g. "looks good", "continue", "yes", "go ahead", "that's fine", "confirm"). Use this for both boolean confirmation and scoring review confirmation.
 - "modify_boolean": user wants to change the boolean query terms. Apply their changes to the current query, keeping all terms they didn't mention. Reconstruct the query string. Include modified_boolean.
 - "restart": user wants to start completely over with a new search topic
 - "answer": user is asking a question about the pipeline or results — just answer, do not change anything

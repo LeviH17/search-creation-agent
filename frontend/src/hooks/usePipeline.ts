@@ -7,6 +7,7 @@ import type {
   StepResultData,
   EntityResult,
   BooleanQueryResult,
+  ScoringResult,
 } from "../types";
 
 function makeId() {
@@ -27,6 +28,7 @@ export function usePipeline() {
   const abortRef = useRef<AbortController | null>(null);
   const pendingEntityRef = useRef<EntityResult | null>(null);
   const pendingBooleanRef = useRef<BooleanQueryResult | null>(null);
+  const pendingScoringRef = useRef<ScoringResult | null>(null);
   const lastEntityRef = useRef<EntityResult | null>(null);
   const lastBooleanRef = useRef<BooleanQueryResult | null>(null);
   const originalQueryRef = useRef<string>("");
@@ -146,6 +148,19 @@ export function usePipeline() {
         break;
       }
 
+      case "scoring_review_needed": {
+        const scoring = payload.scoring as ScoringResult;
+        pendingScoringRef.current = scoring;
+        addMessage(
+          "assistant",
+          "I've scored the sample results. Review them in the panel — click any label to correct it, then click 'Confirm scoring' or say 'looks good'."
+        );
+        setPipeline((prev) => ({ ...prev, status: "awaiting_scoring_review" as PipelineStatus }));
+        pipelineStatusRef.current = "awaiting_scoring_review";
+        setIsLoading(false);
+        break;
+      }
+
       case "pipeline_done": {
         const success = payload.success as boolean;
         const iterations_used = payload.iterations_used as number;
@@ -248,6 +263,23 @@ export function usePipeline() {
     }));
   }, [_fireRequest]);
 
+  const confirmScoring = useCallback(async (correctedScoring: ScoringResult) => {
+    setIsLoading(true);
+    setPipeline((prev) => ({ ...prev, status: "running" }));
+    pipelineStatusRef.current = "running";
+
+    const entity = pendingEntityRef.current ?? lastEntityRef.current;
+    const boolean = pendingBooleanRef.current ?? lastBooleanRef.current;
+
+    await _fireRequest(JSON.stringify({
+      query: originalQueryRef.current,
+      conversation_history: historyRef.current,
+      entity_override: entity,
+      boolean_override: boolean,
+      confirmed_scoring: correctedScoring,
+    }));
+  }, [_fireRequest]);
+
   const interpretAndAct = useCallback(async (text: string) => {
     addMessage("user", text);
     setIsLoading(true);
@@ -270,12 +302,21 @@ export function usePipeline() {
 
       switch (result.action) {
         case "confirm": {
-          const entity = pendingEntityRef.current ?? lastEntityRef.current;
-          const boolean = pendingBooleanRef.current ?? lastBooleanRef.current;
-          if (entity && boolean) {
-            await _resumeWithBoolean(entity, boolean);
+          if (pipelineStatusRef.current === "awaiting_scoring_review") {
+            const scoring = pendingScoringRef.current;
+            if (scoring) {
+              await confirmScoring(scoring);
+            } else {
+              setIsLoading(false);
+            }
           } else {
-            setIsLoading(false);
+            const entity = pendingEntityRef.current ?? lastEntityRef.current;
+            const boolean = pendingBooleanRef.current ?? lastBooleanRef.current;
+            if (entity && boolean) {
+              await _resumeWithBoolean(entity, boolean);
+            } else {
+              setIsLoading(false);
+            }
           }
           break;
         }
@@ -317,7 +358,7 @@ export function usePipeline() {
 
   const sendMessage = useCallback((text: string) => {
     const status = pipelineStatusRef.current;
-    if (status === "awaiting_boolean" || status === "done" || status === "error") {
+    if (status === "awaiting_boolean" || status === "awaiting_scoring_review" || status === "done" || status === "error") {
       interpretAndAct(text);
     } else {
       runPipeline(text);
@@ -329,6 +370,7 @@ export function usePipeline() {
     historyRef.current = [];
     pendingEntityRef.current = null;
     pendingBooleanRef.current = null;
+    pendingScoringRef.current = null;
     lastEntityRef.current = null;
     lastBooleanRef.current = null;
     originalQueryRef.current = "";
@@ -347,5 +389,5 @@ export function usePipeline() {
     await _resumeWithBoolean(entity, updated);
   }, [addMessage, _resumeWithBoolean]);
 
-  return { pipeline, messages, isLoading, sendMessage, applyBooleanEdit, reset };
+  return { pipeline, messages, isLoading, sendMessage, applyBooleanEdit, confirmScoring, reset };
 }

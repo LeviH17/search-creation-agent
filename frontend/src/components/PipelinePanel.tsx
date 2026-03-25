@@ -1,12 +1,13 @@
-import type { PipelineState, BooleanQueryResult } from "../types";
+import type { PipelineState, BooleanQueryResult, ScoringResult } from "../types";
 import { StepCard } from "./StepCard";
 
 interface Props {
   pipeline: PipelineState;
   onBooleanApply?: (updated: BooleanQueryResult) => void;
+  onScoringConfirm?: (corrected: ScoringResult) => void;
 }
 
-export function PipelinePanel({ pipeline, onBooleanApply }: Props) {
+export function PipelinePanel({ pipeline, onBooleanApply, onScoringConfirm }: Props) {
   const { steps, status, pipelineDone } = pipeline;
 
   if (status === "idle") {
@@ -39,7 +40,7 @@ export function PipelinePanel({ pipeline, onBooleanApply }: Props) {
             Running
           </span>
         )}
-        {status === "awaiting_boolean" && (
+        {(status === "awaiting_boolean" || status === "awaiting_scoring_review") && (
           <span className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
             Awaiting your input
@@ -66,6 +67,7 @@ export function PipelinePanel({ pipeline, onBooleanApply }: Props) {
               key={step.stepId}
               step={step}
               onBooleanApply={step.result?.resultType === "boolean" ? onBooleanApply : undefined}
+              onScoringConfirm={step.result?.resultType === "scoring" ? onScoringConfirm : undefined}
             />
           ))}
       </div>

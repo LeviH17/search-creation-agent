@@ -95,7 +95,7 @@ export interface StepState {
   completedAt: number | null;
 }
 
-export type PipelineStatus = "idle" | "clarifying" | "running" | "awaiting_boolean" | "done" | "error";
+export type PipelineStatus = "idle" | "clarifying" | "running" | "awaiting_boolean" | "awaiting_scoring_review" | "done" | "error";
 
 export interface PipelineState {
   status: PipelineStatus;
@@ -120,4 +120,5 @@ export interface PipelineRequest {
   conversation_history: { role: string; content: string }[];
   entity_override?: EntityResult;
   boolean_override?: BooleanQueryResult;
+  confirmed_scoring?: ScoringResult;
 }
