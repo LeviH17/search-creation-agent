@@ -5,8 +5,26 @@ from models import BooleanQueryResult, EntityResult, ScoringResult, SmartPromptR
 from prompts import SMART_PROMPT_SYSTEM, SMART_PROMPT_USER
 
 
-async def run(boolean: BooleanQueryResult, entity: EntityResult,
-              scoring: ScoringResult, client: anthropic.AsyncAnthropic) -> SmartPromptResult:
+def _build_intent_context(query: str, conversation_history: list[dict]) -> str:
+    lines = []
+    for msg in conversation_history:
+        role = msg.get("role", "user")
+        content = msg.get("content", "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    lines.append(f"user: {query}")
+    return "\n".join(lines) if lines else "No additional context provided."
+
+
+async def run(
+    boolean: BooleanQueryResult,
+    entity: EntityResult,
+    scoring: ScoringResult,
+    client: anthropic.AsyncAnthropic,
+    query: str = "",
+    conversation_history: list[dict] | None = None,
+) -> SmartPromptResult:
+    intent_context = _build_intent_context(query, conversation_history or [])
 
     user_content = SMART_PROMPT_USER.format(
         entity_name=entity.entityName,
@@ -14,8 +32,9 @@ async def run(boolean: BooleanQueryResult, entity: EntityResult,
         full_name=entity.fullName,
         noise_types=", ".join(entity.knownNoiseTypes) or "None identified",
         ambiguity_reasons=", ".join(entity.ambiguityReasons) or "None identified",
+        intent_context=intent_context,
         query=boolean.query,
-        precision=scoring.precision
+        precision=scoring.precision,
     )
 
     response = await client.messages.create(

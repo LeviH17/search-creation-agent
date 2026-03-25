@@ -93,7 +93,7 @@ async def run_pipeline(
         }, 0)
 
         try:
-            boolean = await boolean_query.run(entity, request.query, client)
+            boolean = await boolean_query.run(entity, request.query, request.conversation_history, client)
         except Exception as e:
             await emit("step_error", "boolean_query", {"message": str(e), "recoverable": False}, 0)
             return
@@ -169,7 +169,11 @@ async def run_pipeline(
                 }, iteration)
 
                 try:
-                    smart_result = await smart_prompt_step.run(current_boolean, entity, scoring, client)
+                    smart_result = await smart_prompt_step.run(
+                        current_boolean, entity, scoring, client,
+                        query=request.query,
+                        conversation_history=request.conversation_history,
+                    )
                 except Exception as e:
                     await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
                     return
@@ -193,7 +197,9 @@ async def run_pipeline(
 
                 try:
                     prod_boolean = await production_boolean_step.run(
-                        entity, scoring, current_boolean, current_smart_prompt, client
+                        entity, scoring, current_boolean, current_smart_prompt, client,
+                        query=request.query,
+                        conversation_history=request.conversation_history,
                     )
                 except Exception as e:
                     await emit("step_error", "production_boolean", {"message": str(e), "recoverable": False}, iteration)
@@ -250,7 +256,11 @@ async def run_pipeline(
         }, iteration)
 
         try:
-            smart_result = await smart_prompt_step.run(current_boolean, entity, scoring, client)
+            smart_result = await smart_prompt_step.run(
+                current_boolean, entity, scoring, client,
+                query=request.query,
+                conversation_history=request.conversation_history,
+            )
         except Exception as e:
             await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
             return

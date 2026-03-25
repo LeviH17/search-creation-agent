@@ -61,14 +61,23 @@ Smart Search filter applied: {smart_prompt}
 Return a JSON array of {count} snippet objects. No other text."""
 
 
-INTENT_CHECK_SYSTEM = """You are an expert at understanding search intent for a social media listening platform.
-Your job is to decide whether a user's query contains enough information to build a targeted search.
+INTENT_CHECK_SYSTEM = """You are a search intent analyst for a social media monitoring platform.
 
-Evaluate if the query clearly identifies:
-1. What entity or topic they want to track (company, person, product, theme, event)
-2. Enough context to distinguish it from other things with the same name (if ambiguous)
+Your goal is to gather enough context to build a precise, high-quality search. You need three things:
+1. ENTITY — what are they tracking? (must be unambiguous)
+2. PURPOSE — why are they tracking it? (e.g. brand reputation, competitor research, crisis detection, sentiment analysis, PR monitoring)
+3. SCOPE — any specific focus, inclusions, exclusions, or known noise? (e.g. only negative mentions, exclude job postings, specific markets)
 
-Return ONLY valid JSON in this exact format:
+Ask ONE focused question at a time targeting the highest-priority missing context, in this order:
+1. If the entity is ambiguous → ask to disambiguate it
+2. If purpose is unknown → ask why they want to track this / what outcome they need
+3. If purpose is known but scope is completely unspecified → ask about specific focus or known noise to handle
+
+STOP asking (set sufficient=true) when:
+- Entity is clear AND purpose is known, OR
+- The conversation already has 2 or more prior user exchanges (don't over-ask)
+
+Return ONLY valid JSON:
 {
   "sufficient": true | false,
   "question": "string or null",
@@ -76,7 +85,7 @@ Return ONLY valid JSON in this exact format:
 }
 
 If sufficient is true, question and suggestions should be null/[].
-If sufficient is false, question should be a single friendly clarifying question, and suggestions should be 2-4 short answer options.
+Suggestions should be 2-4 short, distinct answer options covering the most common cases.
 """
 
 INTENT_CHECK_USER = """User query: "{query}"
@@ -84,7 +93,7 @@ INTENT_CHECK_USER = """User query: "{query}"
 Conversation so far:
 {history}
 
-Is this query sufficient to infer search intent? Return JSON."""
+Evaluate what context is still missing. Return JSON."""
 
 
 ENTITY_EXTRACTION_SYSTEM = """You are an expert entity analyst for a social media intelligence platform.
@@ -156,7 +165,10 @@ BOOLEAN_QUERY_USER = """Entity information:
 
 Original user query: "{query}"
 
-Craft an exhaustive OpenSearch boolean query. Return JSON only."""
+User's stated intent and context:
+{intent_context}
+
+Use the intent context to tailor the query — include terms that match their purpose and exclude noise they've flagged. Craft an exhaustive OpenSearch boolean query. Return JSON only."""
 
 
 RELEVANCE_SCORING_SYSTEM = """You are scoring social media snippets for relevance to a search intent.
@@ -265,10 +277,13 @@ Full name: {full_name}
 Known noise types: {noise_types}
 Ambiguity reasons: {ambiguity_reasons}
 
+User's stated intent and context:
+{intent_context}
+
 Current boolean query: "{query}"
 Current precision: {precision:.0%}
 
-Write a natural language Smart Search filter. Return JSON only."""
+Write a natural language Smart Search filter that reflects the user's specific purpose and any scope constraints they mentioned. Return JSON only."""
 
 
 PRODUCTION_BOOLEAN_SYSTEM = """You are writing the final production boolean query for a social media monitoring search.
@@ -300,6 +315,9 @@ Full name: {full_name}
 Aliases: {aliases}
 Handles: {handles}
 Known noise types: {noise_types}
+
+User's stated intent and context:
+{intent_context}
 
 Smart Search filter that will handle semantic filtering in production:
 "{smart_prompt}"
