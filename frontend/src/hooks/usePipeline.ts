@@ -136,21 +136,10 @@ export function usePipeline() {
         lastEntityRef.current = entity;
         lastBooleanRef.current = boolean;
 
-        // Build a readable chat message showing the boolean query
-        const must = boolean.must_terms.length ? boolean.must_terms.map((t) => `\`${t}\``).join(", ") : "—";
-        const should = boolean.should_terms.length ? boolean.should_terms.map((t) => `\`${t}\``).join(", ") : "—";
-        const mustNot = boolean.must_not_terms.length ? boolean.must_not_terms.map((t) => `\`${t}\``).join(", ") : "—";
-
-        const chatMsg =
-          `I've built a boolean query for your search:\n\n` +
-          `\`\`\`\n${boolean.query}\n\`\`\`\n\n` +
-          `${boolean.explanation}\n\n` +
-          `**Must include:** ${must}\n` +
-          `**Should include:** ${should}\n` +
-          `**Must not include:** ${mustNot}\n\n` +
-          `Does this look right? Reply "looks good" to continue, or tell me what to change — e.g. "add Tesla to should terms" or "remove apple pie from must not".`;
-
-        addMessage("assistant", chatMsg);
+        addMessage(
+          "assistant",
+          "I've built a boolean query — review it in the panel. Reply \"looks good\" to continue, or tell me what to change."
+        );
         setPipeline((prev) => ({ ...prev, status: "awaiting_boolean" as PipelineStatus }));
         pipelineStatusRef.current = "awaiting_boolean";
         setIsLoading(false);
@@ -168,12 +157,12 @@ export function usePipeline() {
           pipelineDone: { success, iterations_used, final_precision },
         }));
         pipelineStatusRef.current = newStatus;
-        if (success) {
-          addMessage(
-            "assistant",
-            `Search created! Achieved ${Math.round(final_precision * 100)}% precision in ${iterations_used} iteration${iterations_used !== 1 ? "s" : ""}. You can ask me to adjust the query, or start a new search.`
-          );
-        }
+        addMessage(
+          "assistant",
+          success
+            ? "Search created! Review the results in the panel. You can ask me to adjust anything or start a new search."
+            : "Pipeline finished — review the results in the panel. You can ask me to adjust the query or start a new search."
+        );
         setIsLoading(false);
         break;
       }
