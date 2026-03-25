@@ -3,7 +3,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { PipelinePanel } from "./components/PipelinePanel";
 
 export default function App() {
-  const { pipeline, messages, isLoading, sendMessage, reset } = usePipeline();
+  const { pipeline, messages, isLoading, sendMessage, applyBooleanEdit, reset } = usePipeline();
 
   const chatPlaceholder =
     pipeline.status === "awaiting_boolean"
@@ -34,7 +34,7 @@ export default function App() {
           <span className="text-xs text-gray-400">Real-time pipeline execution</span>
         </div>
 
-        <PipelinePanel pipeline={pipeline} />
+        <PipelinePanel pipeline={pipeline} onBooleanApply={applyBooleanEdit} />
       </div>
     </div>
   );

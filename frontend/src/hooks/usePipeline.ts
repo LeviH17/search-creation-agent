@@ -349,5 +349,14 @@ export function usePipeline() {
     setIsLoading(false);
   }, []);
 
-  return { pipeline, messages, isLoading, sendMessage, reset };
+  const applyBooleanEdit = useCallback(async (updated: BooleanQueryResult) => {
+    const entity = pendingEntityRef.current ?? lastEntityRef.current;
+    pendingBooleanRef.current = updated;
+    lastBooleanRef.current = updated;
+    addMessage("assistant", "Got it — applying your changes and re-running the pipeline...");
+    setIsLoading(true);
+    await _resumeWithBoolean(entity, updated);
+  }, [addMessage, _resumeWithBoolean]);
+
+  return { pipeline, messages, isLoading, sendMessage, applyBooleanEdit, reset };
 }

@@ -1,11 +1,12 @@
-import type { PipelineState } from "../types";
+import type { PipelineState, BooleanQueryResult } from "../types";
 import { StepCard } from "./StepCard";
 
 interface Props {
   pipeline: PipelineState;
+  onBooleanApply?: (updated: BooleanQueryResult) => void;
 }
 
-export function PipelinePanel({ pipeline }: Props) {
+export function PipelinePanel({ pipeline, onBooleanApply }: Props) {
   const { steps, status, pipelineDone } = pipeline;
 
   if (status === "idle") {
@@ -61,7 +62,11 @@ export function PipelinePanel({ pipeline }: Props) {
         {steps
           .filter((s) => s.result?.resultType !== "intent_check")
           .map((step) => (
-            <StepCard key={step.stepId} step={step} />
+            <StepCard
+              key={step.stepId}
+              step={step}
+              onBooleanApply={step.result?.resultType === "boolean" ? onBooleanApply : undefined}
+            />
           ))}
       </div>
     </div>
