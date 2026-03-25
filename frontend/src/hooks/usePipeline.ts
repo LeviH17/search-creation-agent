@@ -27,7 +27,10 @@ export function usePipeline() {
   const abortRef = useRef<AbortController | null>(null);
   const pendingEntityRef = useRef<EntityResult | null>(null);
   const pendingBooleanRef = useRef<BooleanQueryResult | null>(null);
+  const lastEntityRef = useRef<EntityResult | null>(null);
+  const lastBooleanRef = useRef<BooleanQueryResult | null>(null);
   const originalQueryRef = useRef<string>("");
+  const pipelineStatusRef = useRef<PipelineStatus>("idle");
 
   const addMessage = useCallback((role: ChatMessage["role"], content: string, suggestions?: string[]) => {
     const msg: ChatMessage = { id: makeId(), role, content, suggestions, timestamp: Date.now() };
@@ -86,6 +89,7 @@ export function usePipeline() {
           startedAt: Date.now(),
         });
         setPipeline((prev) => ({ ...prev, status: "running" as PipelineStatus }));
+        pipelineStatusRef.current = "running";
         break;
       }
 
@@ -97,6 +101,9 @@ export function usePipeline() {
           completedAt: Date.now(),
           result: { resultType, data: resultData } as StepResultData,
         });
+        // Track last known entity and boolean for later modifications
+        if (resultType === "entity") lastEntityRef.current = resultData as EntityResult;
+        if (resultType === "boolean") lastBooleanRef.current = resultData as BooleanQueryResult;
         break;
       }
 
@@ -115,14 +122,37 @@ export function usePipeline() {
         const suggestions = (payload.suggestions as string[]) ?? [];
         addMessage("assistant", question, suggestions);
         setPipeline((prev) => ({ ...prev, status: "clarifying" as PipelineStatus }));
+        pipelineStatusRef.current = "clarifying";
         setIsLoading(false);
         break;
       }
 
       case "boolean_confirm_needed": {
-        pendingEntityRef.current = payload.entity as EntityResult;
-        pendingBooleanRef.current = payload.boolean as BooleanQueryResult;
+        const entity = payload.entity as EntityResult;
+        const boolean = payload.boolean as BooleanQueryResult;
+
+        pendingEntityRef.current = entity;
+        pendingBooleanRef.current = boolean;
+        lastEntityRef.current = entity;
+        lastBooleanRef.current = boolean;
+
+        // Build a readable chat message showing the boolean query
+        const must = boolean.must_terms.length ? boolean.must_terms.map((t) => `\`${t}\``).join(", ") : "—";
+        const should = boolean.should_terms.length ? boolean.should_terms.map((t) => `\`${t}\``).join(", ") : "—";
+        const mustNot = boolean.must_not_terms.length ? boolean.must_not_terms.map((t) => `\`${t}\``).join(", ") : "—";
+
+        const chatMsg =
+          `I've built a boolean query for your search:\n\n` +
+          `\`\`\`\n${boolean.query}\n\`\`\`\n\n` +
+          `${boolean.explanation}\n\n` +
+          `**Must include:** ${must}\n` +
+          `**Should include:** ${should}\n` +
+          `**Must not include:** ${mustNot}\n\n` +
+          `Does this look right? Reply "looks good" to continue, or tell me what to change — e.g. "add Tesla to should terms" or "remove apple pie from must not".`;
+
+        addMessage("assistant", chatMsg);
         setPipeline((prev) => ({ ...prev, status: "awaiting_boolean" as PipelineStatus }));
+        pipelineStatusRef.current = "awaiting_boolean";
         setIsLoading(false);
         break;
       }
@@ -131,11 +161,19 @@ export function usePipeline() {
         const success = payload.success as boolean;
         const iterations_used = payload.iterations_used as number;
         const final_precision = payload.final_precision as number;
+        const newStatus = (success ? "done" : "error") as PipelineStatus;
         setPipeline((prev) => ({
           ...prev,
-          status: (success ? "done" : "error") as PipelineStatus,
+          status: newStatus,
           pipelineDone: { success, iterations_used, final_precision },
         }));
+        pipelineStatusRef.current = newStatus;
+        if (success) {
+          addMessage(
+            "assistant",
+            `Search created! Achieved ${Math.round(final_precision * 100)}% precision in ${iterations_used} iteration${iterations_used !== 1 ? "s" : ""}. You can ask me to adjust the query, or start a new search.`
+          );
+        }
         setIsLoading(false);
         break;
       }
@@ -182,6 +220,7 @@ export function usePipeline() {
       if (err instanceof Error && err.name !== "AbortError") {
         setIsLoading(false);
         setPipeline((prev) => ({ ...prev, status: "error" }));
+        pipelineStatusRef.current = "error";
       }
     }
   }, [processSSELine]);
@@ -201,6 +240,7 @@ export function usePipeline() {
       steps: prev.status === "idle" ? [] : prev.steps,
       pipelineDone: null,
     }));
+    pipelineStatusRef.current = "running";
 
     await _fireRequest(JSON.stringify({
       query: userMessage,
@@ -208,38 +248,106 @@ export function usePipeline() {
     }));
   }, [addMessage, _fireRequest]);
 
-  const confirmBoolean = useCallback(async (editedQuery: string) => {
-    if (!pendingEntityRef.current || !pendingBooleanRef.current) return;
-
-    const booleanOverride = { ...pendingBooleanRef.current, query: editedQuery };
-
-    setIsLoading(true);
+  const _resumeWithBoolean = useCallback(async (entity: EntityResult | null, boolean: BooleanQueryResult) => {
     setPipeline((prev) => ({ ...prev, status: "running" }));
-
+    pipelineStatusRef.current = "running";
     await _fireRequest(JSON.stringify({
       query: originalQueryRef.current,
       conversation_history: historyRef.current,
-      entity_override: pendingEntityRef.current,
-      boolean_override: booleanOverride,
+      entity_override: entity,
+      boolean_override: boolean,
     }));
   }, [_fireRequest]);
 
+  const interpretAndAct = useCallback(async (text: string) => {
+    addMessage("user", text);
+    setIsLoading(true);
+
+    try {
+      const apiBase = import.meta.env.VITE_API_URL ?? "";
+      const response = await fetch(`${apiBase}/api/interpret-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          status: pipelineStatusRef.current,
+          pending_boolean: pendingBooleanRef.current ?? lastBooleanRef.current,
+          original_query: originalQueryRef.current,
+        }),
+      });
+
+      const result = await response.json();
+      addMessage("assistant", result.response_message);
+
+      switch (result.action) {
+        case "confirm": {
+          const entity = pendingEntityRef.current ?? lastEntityRef.current;
+          const boolean = pendingBooleanRef.current ?? lastBooleanRef.current;
+          if (entity && boolean) {
+            await _resumeWithBoolean(entity, boolean);
+          } else {
+            setIsLoading(false);
+          }
+          break;
+        }
+        case "modify_boolean": {
+          if (result.modified_boolean) {
+            const entity = pendingEntityRef.current ?? lastEntityRef.current;
+            pendingBooleanRef.current = result.modified_boolean;
+            lastBooleanRef.current = result.modified_boolean;
+            await _resumeWithBoolean(entity, result.modified_boolean);
+          } else {
+            setIsLoading(false);
+          }
+          break;
+        }
+        case "restart": {
+          // Reset pipeline state but keep messages so user sees the farewell message
+          abortRef.current?.abort();
+          historyRef.current = [];
+          pendingEntityRef.current = null;
+          pendingBooleanRef.current = null;
+          lastEntityRef.current = null;
+          lastBooleanRef.current = null;
+          originalQueryRef.current = "";
+          setPipeline(INITIAL_PIPELINE);
+          pipelineStatusRef.current = "idle";
+          setIsLoading(false);
+          break;
+        }
+        case "answer":
+        default: {
+          setIsLoading(false);
+          break;
+        }
+      }
+    } catch {
+      setIsLoading(false);
+    }
+  }, [addMessage, _resumeWithBoolean]);
+
   const sendMessage = useCallback((text: string) => {
-    runPipeline(text);
-  }, [runPipeline]);
+    const status = pipelineStatusRef.current;
+    if (status === "awaiting_boolean" || status === "done" || status === "error") {
+      interpretAndAct(text);
+    } else {
+      runPipeline(text);
+    }
+  }, [interpretAndAct, runPipeline]);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
     historyRef.current = [];
     pendingEntityRef.current = null;
     pendingBooleanRef.current = null;
+    lastEntityRef.current = null;
+    lastBooleanRef.current = null;
     originalQueryRef.current = "";
     setPipeline(INITIAL_PIPELINE);
+    pipelineStatusRef.current = "idle";
     setMessages([]);
     setIsLoading(false);
   }, []);
 
-  const awaitingBoolean = pipeline.status === "awaiting_boolean";
-
-  return { pipeline, messages, isLoading, sendMessage, confirmBoolean, awaitingBoolean, reset };
+  return { pipeline, messages, isLoading, sendMessage, reset };
 }

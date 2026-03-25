@@ -3,7 +3,14 @@ import { ChatPanel } from "./components/ChatPanel";
 import { PipelinePanel } from "./components/PipelinePanel";
 
 export default function App() {
-  const { pipeline, messages, isLoading, sendMessage, confirmBoolean, awaitingBoolean, reset } = usePipeline();
+  const { pipeline, messages, isLoading, sendMessage, reset } = usePipeline();
+
+  const chatPlaceholder =
+    pipeline.status === "awaiting_boolean"
+      ? "Say 'looks good' or describe changes..."
+      : pipeline.status === "done" || pipeline.status === "error"
+      ? "Ask to modify or start a new search..."
+      : "e.g. Track Apple Inc. sentiment...";
 
   return (
     <div className="flex h-screen bg-gray-50 font-sans overflow-hidden">
@@ -14,6 +21,7 @@ export default function App() {
           isLoading={isLoading}
           onSend={sendMessage}
           onReset={reset}
+          placeholder={chatPlaceholder}
         />
       </div>
 
@@ -26,7 +34,7 @@ export default function App() {
           <span className="text-xs text-gray-400">Real-time pipeline execution</span>
         </div>
 
-        <PipelinePanel pipeline={pipeline} awaitingBoolean={awaitingBoolean} onBooleanConfirm={confirmBoolean} />
+        <PipelinePanel pipeline={pipeline} />
       </div>
     </div>
   );

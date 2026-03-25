@@ -67,3 +67,10 @@ class PipelineRequest(BaseModel):
     conversation_history: list[dict] = []
     entity_override: Optional[dict] = None
     boolean_override: Optional[dict] = None
+
+
+class ChatInterpretRequest(BaseModel):
+    message: str
+    status: str
+    pending_boolean: Optional[BooleanQueryResult] = None
+    original_query: str = ""

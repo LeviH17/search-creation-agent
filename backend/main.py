@@ -9,8 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from models import PipelineRequest
+from models import PipelineRequest, ChatInterpretRequest
 from pipeline import run_pipeline
+from interpret import interpret_chat_message
 
 load_dotenv()
 
@@ -71,6 +72,17 @@ async def run_pipeline_endpoint(request: PipelineRequest):
             "Connection": "keep-alive",
         },
     )
+
+
+@app.post("/api/interpret-chat")
+async def interpret_chat_endpoint(request: ChatInterpretRequest):
+    result = await interpret_chat_message(
+        user_message=request.message,
+        status=request.status,
+        pending_boolean=request.pending_boolean,
+        original_query=request.original_query,
+    )
+    return result
 
 
 @app.get("/api/health")
