@@ -20,7 +20,7 @@ class EntityResult(BaseModel):
 
 class BooleanQueryResult(BaseModel):
     query: str
-    explanation: str
+    explanation: str = ""
     must_terms: list[str] = []
     should_terms: list[str] = []
     must_not_terms: list[str] = []
