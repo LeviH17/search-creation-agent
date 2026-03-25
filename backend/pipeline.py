@@ -13,6 +13,7 @@ from steps import (
     relevance_scoring,
     boolean_broadening,
     smart_prompt as smart_prompt_step,
+    production_boolean as production_boolean_step,
     create_search,
 )
 
@@ -158,13 +159,58 @@ async def run_pipeline(
         }, iteration)
 
         if scoring.passed:
+            # ── Smart prompt (if not yet generated) ──────────────────────
+            # Always generate a smart prompt before the production boolean
+            # so the broader boolean can rely on it for semantic filtering.
+            if not current_smart_prompt:
+                await emit("step_start", "smart_prompt", {
+                    "label": "Crafting Smart Search filter",
+                    "description": "Writing a natural language AI filter to catch semantic noise the boolean can't handle."
+                }, iteration)
+
+                try:
+                    smart_result = await smart_prompt_step.run(current_boolean, entity, scoring, client)
+                except Exception as e:
+                    await emit("step_error", "smart_prompt", {"message": str(e), "recoverable": False}, iteration)
+                    return
+
+                current_smart_prompt = smart_result.prompt
+
+                await emit("step_complete", "smart_prompt", {
+                    "result_type": "smart_prompt",
+                    "data": smart_result.model_dump()
+                }, iteration)
+
+            # ── Production boolean ────────────────────────────────────────
+            # Generate a broader boolean for production use — the smart prompt
+            # handles semantic filtering, so the boolean can maximise recall.
+            prod_boolean = current_boolean  # fallback
+            if current_smart_prompt:
+                await emit("step_start", "production_boolean", {
+                    "label": "Crafting production boolean",
+                    "description": "Building a broader boolean for live use — semantic filtering is handled by the Smart Search prompt."
+                }, iteration)
+
+                try:
+                    prod_boolean = await production_boolean_step.run(
+                        entity, scoring, current_boolean, current_smart_prompt, client
+                    )
+                except Exception as e:
+                    await emit("step_error", "production_boolean", {"message": str(e), "recoverable": False}, iteration)
+                    return
+
+                await emit("step_complete", "production_boolean", {
+                    "result_type": "boolean",
+                    "data": prod_boolean.model_dump()
+                }, iteration)
+
             # ── Create search ─────────────────────────────────────────────
             await emit("step_start", "create_search", {
                 "label": "Creating search",
                 "description": "Precision threshold met. Saving the search configuration."
             }, iteration)
 
-            result = create_search.run(current_boolean, scoring, iteration, current_smart_prompt)
+            result = create_search.run(prod_boolean, scoring, iteration, current_smart_prompt)
 
             await emit("step_complete", "create_search", {
                 "result_type": "create_search",

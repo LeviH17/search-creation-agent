@@ -124,7 +124,7 @@ Extract entity information. Return JSON only."""
 
 
 BOOLEAN_QUERY_SYSTEM = """You are an expert at writing OpenSearch boolean queries for social media monitoring.
-Given entity information, craft an optimal boolean search query.
+Given entity information, craft an exhaustive but intelligent boolean search query.
 
 OpenSearch boolean syntax rules:
 - AND: space between terms or explicit AND
@@ -143,11 +143,12 @@ Return ONLY valid JSON:
   "must_not_terms": ["term1", "term2"]
 }
 
-Guidelines:
-- Include the entity name and its key aliases/handles
-- Add must_not terms for obvious noise categories identified in the entity analysis
-- Use should_terms for related terms that would be useful but aren't required
-- Keep the query focused — precision over recall at this stage
+Guidelines — prioritise RECALL over precision at this stage:
+- must_terms: the core entity name(s) that must appear — keep this tight so you don't miss mentions
+- should_terms: be generous — include all known aliases, handles, tickers, informal names, abbreviations, common misspellings, product lines, and related terms people use when talking about this entity online
+- must_not_terms: use sparingly — only exclude terms that are DEFINITIVELY unrelated and produce overwhelming noise (e.g. a completely different entity that shares the exact keyword). Do NOT pre-filter for context or tone.
+- Think about how real people mention this entity informally: slang, shortened names, hashtags, nicknames
+- Example for RAM trucks: must=(ram), should=(truck OR trucks OR pickup OR "Ram 1500" OR "Ram 2500" OR Dodge), must_not=(goat OR sheep OR animal OR livestock)
 """
 
 BOOLEAN_QUERY_USER = """Entity information:
@@ -155,7 +156,7 @@ BOOLEAN_QUERY_USER = """Entity information:
 
 Original user query: "{query}"
 
-Craft an OpenSearch boolean query. Return JSON only."""
+Craft an exhaustive OpenSearch boolean query. Return JSON only."""
 
 
 RELEVANCE_SCORING_SYSTEM = """You are scoring social media snippets for relevance to a search intent.
@@ -204,10 +205,12 @@ Score this snippet for relevance. Return JSON only."""
 BOOLEAN_BROADENING_SYSTEM = """You are an expert at iteratively improving OpenSearch boolean queries for social media monitoring.
 You have been given a query that didn't achieve the required precision threshold.
 
-Analyze the scoring results to understand what went wrong, then produce an improved query that:
-1. Broadens recall by adding more aliases, related terms, or variant spellings
-2. Improves precision by adding NOT terms for confirmed noise patterns
-3. Adjusts phrasing to better capture the intended content
+Analyse the scoring results carefully, then produce an improved query. Your priorities in order:
+1. BROADEN recall first — add more aliases, informal names, variant spellings, related product terms, hashtags, and slang people use when discussing this entity. Missing relevant content is worse than including some noise.
+2. TIGHTEN precision by adding NOT terms ONLY for confirmed, high-volume noise patterns you can see in the irrelevant examples. Be surgical — don't over-exclude.
+3. Restructure groupings if the current syntax is too restrictive.
+
+Remember: a downstream Smart Search AI filter will handle semantic nuance. Your job is to make sure all genuinely relevant content passes through the boolean net.
 
 Return ONLY valid JSON:
 {
@@ -231,13 +234,13 @@ Scoring breakdown:
 - Somewhat Relevant: {somewhat_relevant}
 - Irrelevant: {irrelevant}
 
-Examples of IRRELEVANT snippets that slipped through:
+Examples of IRRELEVANT snippets that slipped through (add NOT terms for confirmed noise patterns):
 {noise_examples}
 
-Examples of RELEVANT snippets that were correctly captured:
+Examples of RELEVANT snippets that were correctly captured (preserve what is working):
 {relevant_examples}
 
-Improve the query to increase precision. Return JSON only."""
+Broaden and refine the query. Return JSON only."""
 
 
 SMART_PROMPT_SYSTEM = """You are an expert at writing natural language filters for AI-powered content filtering.
@@ -266,3 +269,44 @@ Current boolean query: "{query}"
 Current precision: {precision:.0%}
 
 Write a natural language Smart Search filter. Return JSON only."""
+
+
+PRODUCTION_BOOLEAN_SYSTEM = """You are writing the final production boolean query for a social media monitoring search.
+
+This query will run continuously in production alongside an AI Smart Search filter that handles all semantic and contextual relevance filtering. Your only job is to cast the widest reasonable net — maximum recall.
+
+Principles:
+- INCLUDE everything: core entity name, all aliases, handles, tickers, informal names, abbreviations, misspellings, hashtags, nicknames, related product terms
+- EXCLUDE with NOT only terms that are DEFINITIVELY and irredeemably unrelated — i.e. a completely different entity or meaning that shares the exact keyword and would never appear in genuinely relevant content
+- Do NOT try to filter for context, sentiment, or topic — the Smart Search filter handles that
+- When in doubt, leave it in
+
+Example — RAM trucks:
+  Good: (ram) AND (truck OR trucks OR pickup OR "Ram 1500" OR "Ram 2500" OR Dodge OR RAMS) AND NOT (goat OR sheep OR animal OR livestock OR "Los Angeles Rams")
+  Bad: (ram AND truck AND (review OR recall OR news)) — too restrictive, misses casual mentions
+
+Return ONLY valid JSON:
+{
+  "query": "the full OpenSearch boolean query string",
+  "explanation": "one sentence explaining why this is the right production query",
+  "must_terms": ["term1", "term2"],
+  "should_terms": ["term1", "term2"],
+  "must_not_terms": ["term1"]
+}
+"""
+
+PRODUCTION_BOOLEAN_USER = """Entity: {entity_name} ({entity_type})
+Full name: {full_name}
+Aliases: {aliases}
+Handles: {handles}
+Known noise types: {noise_types}
+
+Smart Search filter that will handle semantic filtering in production:
+"{smart_prompt}"
+
+Scoring loop boolean (used during quality testing, for reference):
+"{scoring_boolean}"
+
+Final precision achieved during testing: {precision:.0%}
+
+Write the broadest sensible production boolean. Return JSON only."""
