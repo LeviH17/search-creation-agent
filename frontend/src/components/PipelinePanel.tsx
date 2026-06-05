@@ -56,6 +56,11 @@ export function PipelinePanel({ pipeline, onBooleanApply, onScoringConfirm }: Pr
             Max iterations reached · {Math.round(pipelineDone.final_precision * 100)}% precision
           </span>
         )}
+        {status === "error" && !pipelineDone && (
+          <span className="text-xs text-red-600 bg-red-50 px-2.5 py-1 rounded-full">
+            Pipeline failed · see chat for details
+          </span>
+        )}
       </div>
 
       {/* Steps */}
@@ -70,6 +75,17 @@ export function PipelinePanel({ pipeline, onBooleanApply, onScoringConfirm }: Pr
               onScoringConfirm={step.result?.resultType === "scoring" ? onScoringConfirm : undefined}
             />
           ))}
+        {status === "error" && !pipelineDone && steps.length === 0 && (
+          <div className="text-center py-12 px-4">
+            <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center text-xl mx-auto mb-3">
+              ⚠
+            </div>
+            <p className="text-sm text-gray-700 font-medium mb-1">Pipeline didn't start</p>
+            <p className="text-xs text-gray-500 leading-relaxed max-w-xs mx-auto">
+              The backend couldn't be reached or stopped responding before any step ran. Check the chat for the specific error, then try again or click "New search".
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

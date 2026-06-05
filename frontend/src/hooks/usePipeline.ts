@@ -186,10 +186,26 @@ export function usePipeline() {
 
   const _fireRequest = useCallback(async (body: string) => {
     abortRef.current?.abort();
-    abortRef.current = new AbortController();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     let buffer = "";
     let currentEvent = "message";
+    let terminalSeen = false;
+    const TERMINAL_EVENTS = new Set([
+      "step_error",
+      "clarification_needed",
+      "boolean_confirm_needed",
+      "scoring_review_needed",
+      "pipeline_done",
+    ]);
+
+    const failWith = (message: string) => {
+      addMessage("assistant", message);
+      setIsLoading(false);
+      setPipeline((prev) => ({ ...prev, status: "error" }));
+      pipelineStatusRef.current = "error";
+    };
 
     try {
       const apiBase = import.meta.env.VITE_API_URL ?? "";
@@ -197,10 +213,17 @@ export function usePipeline() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-        signal: abortRef.current.signal,
+        signal: controller.signal,
       });
 
-      const reader = response.body!.getReader();
+      if (!response.ok || !response.body) {
+        const text = await response.text().catch(() => "");
+        const snippet = text ? `: ${text.slice(0, 200)}` : "";
+        failWith(`Backend error (HTTP ${response.status})${snippet}. Please try again.`);
+        return;
+      }
+
+      const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
       while (true) {
@@ -215,19 +238,22 @@ export function usePipeline() {
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
+            if (TERMINAL_EVENTS.has(currentEvent)) terminalSeen = true;
             processSSELine(currentEvent, line.slice(6));
             currentEvent = "message";
           }
         }
       }
+
+      if (!terminalSeen && !controller.signal.aborted) {
+        failWith("The pipeline ended unexpectedly without a result. Please try again.");
+      }
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {
-        setIsLoading(false);
-        setPipeline((prev) => ({ ...prev, status: "error" }));
-        pipelineStatusRef.current = "error";
+        failWith(`Couldn't reach the backend: ${err.message}. Please try again.`);
       }
     }
-  }, [processSSELine]);
+  }, [processSSELine, addMessage]);
 
   const runPipeline = useCallback(async (userMessage: string) => {
     historyRef.current = [
