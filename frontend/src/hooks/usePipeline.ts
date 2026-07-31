@@ -9,6 +9,7 @@ import type {
   BooleanQueryResult,
   ScoringResult,
 } from "../types";
+import { streamMockPipeline, mockInterpretChat } from "../mockBackend";
 
 function makeId() {
   return Math.random().toString(36).slice(2);
@@ -189,17 +190,6 @@ export function usePipeline() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    let buffer = "";
-    let currentEvent = "message";
-    let terminalSeen = false;
-    const TERMINAL_EVENTS = new Set([
-      "step_error",
-      "clarification_needed",
-      "boolean_confirm_needed",
-      "scoring_review_needed",
-      "pipeline_done",
-    ]);
-
     const failWith = (message: string) => {
       addMessage("assistant", message);
       setIsLoading(false);
@@ -208,49 +198,14 @@ export function usePipeline() {
     };
 
     try {
-      const apiBase = import.meta.env.VITE_API_URL ?? "";
-      const response = await fetch(`${apiBase}/api/run-pipeline`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-        signal: controller.signal,
-      });
-
-      if (!response.ok || !response.body) {
-        const text = await response.text().catch(() => "");
-        const snippet = text ? `: ${text.slice(0, 200)}` : "";
-        failWith(`Backend error (HTTP ${response.status})${snippet}. Please try again.`);
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            if (TERMINAL_EVENTS.has(currentEvent)) terminalSeen = true;
-            processSSELine(currentEvent, line.slice(6));
-            currentEvent = "message";
-          }
-        }
-      }
-
-      if (!terminalSeen && !controller.signal.aborted) {
-        failWith("The pipeline ended unexpectedly without a result. Please try again.");
+      const request = JSON.parse(body);
+      for await (const { event, data } of streamMockPipeline(request)) {
+        if (controller.signal.aborted) return;
+        processSSELine(event, JSON.stringify(data));
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {
-        failWith(`Couldn't reach the backend: ${err.message}. Please try again.`);
+        failWith(`Mock pipeline error: ${err.message}. Please try again.`);
       }
     }
   }, [processSSELine, addMessage]);
@@ -311,19 +266,12 @@ export function usePipeline() {
     setIsLoading(true);
 
     try {
-      const apiBase = import.meta.env.VITE_API_URL ?? "";
-      const response = await fetch(`${apiBase}/api/interpret-chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: text,
-          status: pipelineStatusRef.current,
-          pending_boolean: pendingBooleanRef.current ?? lastBooleanRef.current,
-          original_query: originalQueryRef.current,
-        }),
+      const result = await mockInterpretChat({
+        message: text,
+        status: pipelineStatusRef.current,
+        pending_boolean: pendingBooleanRef.current ?? lastBooleanRef.current,
+        original_query: originalQueryRef.current,
       });
-
-      const result = await response.json();
       addMessage("assistant", result.response_message);
 
       switch (result.action) {
